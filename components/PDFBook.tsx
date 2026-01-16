@@ -1,5 +1,5 @@
 'use client';
-import { useState, forwardRef } from 'react';
+import { useState, useEffect, forwardRef, useCallback } from 'react';
 import HTMLFlipBook from 'react-pageflip';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
@@ -11,17 +11,17 @@ interface PDFBookProps {
   pdfUrl: string;
 }
 
-// Configuración de calidad
+// Factor de calidad (Supermuestreo)
 const SCALE_FACTOR = 3; 
-const BASE_WIDTH = 400;
-const BASE_HEIGHT = 550;
 
+// Componente Wrapper que ahora recibe dimensiones dinámicas
 const PageWrapper = forwardRef<HTMLDivElement, any>((props, ref) => {
   return (
     <div 
       ref={ref} 
-      className="bg-white overflow-hidden w-[400px] h-[550px] flex justify-center items-center relative" 
-      style={{ padding: 0, margin: 0 }} 
+      className="bg-white overflow-hidden flex justify-center items-center relative shadow-sm"
+      // Usamos las props style pasadas desde el padre para el tamaño
+      style={{ ...props.style, padding: 0, margin: 0 }} 
     >
       {props.children}
     </div>
@@ -31,15 +31,48 @@ PageWrapper.displayName = 'PageWrapper';
 
 export default function PDFBook({ pdfUrl }: PDFBookProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
-  
-  // Estado que controla si estamos en modo "Pasar Página" (Zoom 1x) o "Explorar" (Zoom > 1x)
   const [canFlip, setCanFlip] = useState(true);
+
+  // --- ESTADO PARA RESPONSIVIDAD ---
+  const [bookSize, setBookSize] = useState({
+    width: 400,  // Ancho base PC
+    height: 550, // Alto base PC
+    isMobile: false
+  });
+
+  // Función para calcular tamaño basado en la ventana
+  const calculateSize = useCallback(() => {
+    const screenW = window.innerWidth;
+    const screenH = window.innerHeight;
+
+    // Si la pantalla es menor a 768px (Tablets/Celulares verticales)
+    const isMobile = screenW < 768;
+
+    if (isMobile) {
+      // EN MOVIL: Ocupamos casi todo el ancho de la pantalla
+      // Dejamos 20px de margen (10px cada lado)
+      const newWidth = Math.min(screenW - 20, 400); 
+      // Calculamos la altura manteniendo la proporción (aprox 1.375)
+      const newHeight = newWidth * 1.375; 
+      
+      setBookSize({ width: newWidth, height: newHeight, isMobile: true });
+    } else {
+      // EN PC: Medidas fijas originales
+      setBookSize({ width: 400, height: 550, isMobile: false });
+    }
+  }, []);
+
+  // Detectar cambio de tamaño de pantalla
+  useEffect(() => {
+    calculateSize(); // Cálculo inicial
+    window.addEventListener('resize', calculateSize);
+    return () => window.removeEventListener('resize', calculateSize);
+  }, [calculateSize]);
 
   function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
     setNumPages(numPages);
   }
 
-  // Funciones de botones
   const handleDownload = () => {
     const link = document.createElement('a');
     link.href = pdfUrl;
@@ -53,8 +86,10 @@ export default function PDFBook({ pdfUrl }: PDFBookProps) {
     window.open(pdfUrl, '_blank');
   };
 
+  // Si aún no hemos calculado el tamaño (render inicial), no mostramos nada para evitar saltos
+  if (bookSize.width === 0) return null;
+
   return (
-    // Agregamos 'overscroll-none' para evitar rebotes del navegador
     <div className="flex flex-col justify-center items-center bg-gray-800 min-h-screen overflow-hidden relative overscroll-none">
       
       <style jsx global>{`
@@ -84,17 +119,12 @@ export default function PDFBook({ pdfUrl }: PDFBookProps) {
           minScale={1}
           maxScale={4}
           centerOnInit={true}
-          // --- CORRECCIÓN CLAVE AQUÍ ---
-          // Si 'canFlip' es verdadero (estamos al 100%), DESACTIVAMOS el panning.
-          // Esto impide que el libro se mueva al arrastrar para pasar página.
           panning={{ disabled: canFlip }} 
-          // -----------------------------
           onTransformed={(ref) => {
-            // Margen de error pequeño (1.01) para detectar si hay zoom
             if (ref.state.scale > 1.01) {
-              setCanFlip(false); // Hay zoom -> Desactivar Flip, Activar Pan
+              setCanFlip(false);
             } else {
-              setCanFlip(true);  // No hay zoom -> Activar Flip, Desactivar Pan
+              setCanFlip(true);
             }
           }}
         >
@@ -106,27 +136,36 @@ export default function PDFBook({ pdfUrl }: PDFBookProps) {
               >
                 {/* @ts-expect-error: Error de tipos de librería */}
                 <HTMLFlipBook 
-                  width={BASE_WIDTH} 
-                  height={BASE_HEIGHT} 
+                  // --- MEDIDAS DINÁMICAS ---
+                  width={bookSize.width} 
+                  height={bookSize.height} 
+                  // -------------------------
                   size="fixed" 
-                  usePortrait={false} 
+                  // Si es móvil, activamos 'usePortrait' para ver UNA sola página
+                  usePortrait={bookSize.isMobile} 
                   showCover={true}
-                  minWidth={BASE_WIDTH}
-                  maxWidth={BASE_WIDTH}
-                  minHeight={BASE_HEIGHT}
-                  maxHeight={BASE_HEIGHT}
+                  minWidth={bookSize.width}
+                  maxWidth={bookSize.width}
+                  minHeight={bookSize.height}
+                  maxHeight={bookSize.height}
                   drawShadow={true}
                   maxShadowOpacity={0.3} 
-                  // Usamos CSS para "apagar" el libro si hay zoom, para que no interfiera
                   className={`shadow-2xl ${canFlip ? '' : 'pointer-events-none transition-none'}`}
                   useMouseEvents={canFlip}
+                  // Forzamos re-render si cambia el modo (móvil/pc)
+                  key={bookSize.isMobile ? 'mobile' : 'desktop'}
                 >
                   {Array.from(new Array(numPages), (el, index) => (
-                    <PageWrapper key={`page_${index + 1}`}>
+                    <PageWrapper 
+                      key={`page_${index + 1}`}
+                      // Pasamos el tamaño al wrapper explícitamente
+                      style={{ width: bookSize.width, height: bookSize.height }}
+                    >
                       <Page 
                         pageNumber={index + 1} 
-                        width={BASE_WIDTH * SCALE_FACTOR} 
-                        height={BASE_HEIGHT * SCALE_FACTOR}
+                        // Calculamos la calidad basada en el nuevo tamaño dinámico
+                        width={bookSize.width * SCALE_FACTOR} 
+                        height={bookSize.height * SCALE_FACTOR}
                         className="pointer-events-none" 
                         renderAnnotationLayer={false} 
                         renderTextLayer={false}
@@ -140,20 +179,20 @@ export default function PDFBook({ pdfUrl }: PDFBookProps) {
                 </HTMLFlipBook>
               </TransformComponent>
 
-              {/* BARRA DE HERRAMIENTAS */}
-              <div className="fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50 bg-gray-900/90 backdrop-blur-md rounded-full px-6 py-3 flex gap-6 shadow-2xl border border-gray-700 items-center">
-                <div className="flex gap-4 items-center">
-                  <button onClick={() => zoomOut()} className="text-white hover:text-blue-400 font-bold text-xl leading-none transition-colors" title="Alejar">−</button>
-                  <button onClick={() => resetTransform()} className="text-gray-300 hover:text-white text-xs font-medium uppercase tracking-wider transition-colors">Reset</button>
-                  <button onClick={() => zoomIn()} className="text-white hover:text-blue-400 font-bold text-xl leading-none transition-colors" title="Acercar">+</button>
+              {/* BARRA DE HERRAMIENTAS ADAPTATIVA */}
+              <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-50 bg-gray-900/90 backdrop-blur-md rounded-full px-4 py-2 flex gap-4 shadow-2xl border border-gray-700 items-center scale-90 sm:scale-100">
+                <div className="flex gap-3 items-center">
+                  <button onClick={() => zoomOut()} className="text-white hover:text-blue-400 font-bold text-xl leading-none px-2 py-1" title="Alejar">−</button>
+                  <button onClick={() => resetTransform()} className="text-gray-300 hover:text-white text-[10px] font-medium uppercase tracking-wider px-1">Reset</button>
+                  <button onClick={() => zoomIn()} className="text-white hover:text-blue-400 font-bold text-xl leading-none px-2 py-1" title="Acercar">+</button>
                 </div>
                 <div className="w-px h-6 bg-gray-600"></div>
                 <div className="flex gap-4 items-center">
-                  <button onClick={handleDownload} className="text-gray-300 hover:text-green-400 transition-colors" title="Descargar PDF">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  <button onClick={handleDownload} className="text-gray-300 hover:text-green-400 transition-colors p-1" title="Descargar">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                   </button>
-                  <button onClick={handlePrint} className="text-gray-300 hover:text-blue-400 transition-colors" title="Imprimir">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+                  <button onClick={handlePrint} className="text-gray-300 hover:text-blue-400 transition-colors p-1" title="Imprimir">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
                   </button>
                 </div>
               </div>
